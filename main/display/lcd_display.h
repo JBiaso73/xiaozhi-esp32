@@ -1,24 +1,21 @@
 #ifndef LCD_DISPLAY_H
 #define LCD_DISPLAY_H
 
-#include "lvgl_display.h"
 #include "gif/lvgl_gif.h"
+#include "lvgl_display.h"
 
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
-#include <font_emoji.h>
-
 #include <atomic>
 #include <memory>
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
-
 class LcdDisplay : public LvglDisplay {
 protected:
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
-    
+
     lv_draw_buf_t draw_buf_;
     lv_obj_t* top_bar_ = nullptr;
     lv_obj_t* status_bar_ = nullptr;
@@ -42,44 +39,46 @@ protected:
 
 protected:
     // Add protected constructor
-    LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width, int height);
-    
+    LcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width,
+               int height);
+
 public:
     ~LcdDisplay();
-    virtual void SetEmotion(const char* emotion) override;
+    virtual bool SetEmotion(const char* emotion) override;
     virtual void SetChatMessage(const char* role, const char* content) override;
+    virtual void RemoveChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
-    
+
     // Set whether to hide chat messages/subtitles
-    void SetHideSubtitle(bool hide);
+    virtual void SetHideSubtitle(bool hide) override;
 };
 
 // SPI LCD display
 class SpiLcdDisplay : public LcdDisplay {
 public:
-    SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
-                  int width, int height, int offset_x, int offset_y,
-                  bool mirror_x, bool mirror_y, bool swap_xy);
+    SpiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width,
+                  int height, int offset_x, int offset_y, bool mirror_x, bool mirror_y,
+                  bool swap_xy);
 };
 
 // RGB LCD display
 class RgbLcdDisplay : public LcdDisplay {
 public:
-    RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
-                  int width, int height, int offset_x, int offset_y,
-                  bool mirror_x, bool mirror_y, bool swap_xy);
+    RgbLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width,
+                  int height, int offset_x, int offset_y, bool mirror_x, bool mirror_y,
+                  bool swap_xy);
 };
 
 // MIPI LCD display
 class MipiLcdDisplay : public LcdDisplay {
 public:
-    MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
-                   int width, int height, int offset_x, int offset_y,
-                   bool mirror_x, bool mirror_y, bool swap_xy);
+    MipiLcdDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel, int width,
+                   int height, int offset_x, int offset_y, bool mirror_x, bool mirror_y,
+                   bool swap_xy);
 };
 
-#endif // LCD_DISPLAY_H
+#endif  // LCD_DISPLAY_H

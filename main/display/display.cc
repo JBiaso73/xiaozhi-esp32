@@ -1,30 +1,27 @@
-#include <esp_log.h>
+#include "display.h"
 #include <esp_err.h>
-#include <string>
+#include <esp_log.h>
 #include <cstdlib>
 #include <cstring>
-#include <font_awesome.h>
-
-#include "display.h"
-#include "board.h"
+#include <string>
 #include "application.h"
-#include "audio_codec.h"
-#include "settings.h"
 #include "assets/lang_config.h"
+#include "audio_codec.h"
+#include "board.h"
+#include "lvgl_display/lvgl_image.h"
+#include "settings.h"
 
 #define TAG "Display"
 
-Display::Display() {
-}
+Display::Display() {}
 
-Display::~Display() {
-}
+Display::~Display() {}
 
-void Display::SetStatus(const char* status) {
-    ESP_LOGW(TAG, "SetStatus: %s", status);
-}
+void Display::SetPreviewImage(std::unique_ptr<LvglImage> image) {}
 
-void Display::ShowNotification(const std::string &notification, int duration_ms) {
+void Display::SetStatus(const char* status) { ESP_LOGW(TAG, "SetStatus: %s", status); }
+
+void Display::ShowNotification(const std::string& notification, int duration_ms) {
     ShowNotification(notification.c_str(), duration_ms);
 }
 
@@ -32,12 +29,12 @@ void Display::ShowNotification(const char* notification, int duration_ms) {
     ESP_LOGW(TAG, "ShowNotification: %s", notification);
 }
 
-void Display::UpdateStatusBar(bool update_all) {
-}
+void Display::UpdateStatusBar(bool update_all) {}
 
-
-void Display::SetEmotion(const char* emotion) {
+bool Display::SetEmotion(const char* emotion) {
+    // The base class has nothing to render with, so the emotion was never set.
     ESP_LOGW(TAG, "SetEmotion: %s", emotion);
+    return false;
 }
 
 void Display::SetChatMessage(const char* role, const char* content) {
@@ -55,6 +52,4 @@ void Display::SetTheme(Theme* theme) {
     settings.SetString("theme", theme->name());
 }
 
-void Display::SetPowerSaveMode(bool on) {
-    ESP_LOGW(TAG, "SetPowerSaveMode: %d", on);
-}
+void Display::SetPowerSaveMode(bool on) { ESP_LOGW(TAG, "SetPowerSaveMode: %d", on); }

@@ -148,13 +148,17 @@ private:
         esp_err_t ret = esp_io_expander_new_i2c_tca9554(i2c_bus_, ESP_IO_EXPANDER_I2C_TCA9554_ADDRESS_000, &io_expander);
         if(ret != ESP_OK)
         ESP_LOGE(TAG, "TCA9554 create returned error");        
-        ret = esp_io_expander_set_dir(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, IO_EXPANDER_OUTPUT);         
+        ret = esp_io_expander_set_dir(io_expander,
+            IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_7,
+            IO_EXPANDER_OUTPUT);
         ESP_ERROR_CHECK(ret);
         vTaskDelay(pdMS_TO_TICKS(100));
         ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1, 0);
         ESP_ERROR_CHECK(ret);
         vTaskDelay(pdMS_TO_TICKS(100));
-        ret = esp_io_expander_set_level(io_expander, IO_EXPANDER_PIN_NUM_1, 1);
+        // EXIO1: LCD reset; EXIO7: NS4150B power amplifier enable.
+        ret = esp_io_expander_set_level(io_expander,
+            IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_7, 1);
         ESP_ERROR_CHECK(ret);
     }
 
@@ -221,10 +225,15 @@ private:
         esp_lcd_panel_handle_t panel = nullptr;
         // 液晶屏控制IO初始化
         ESP_LOGI(TAG, "Install panel IO");
-        esp_lcd_panel_io_spi_config_t io_config = AXS15231B_PANEL_IO_QSPI_CONFIG(
-            DISPLAY_CS_PIN,
-            NULL,
-            NULL);
+        esp_lcd_panel_io_spi_config_t io_config = {};
+        io_config.cs_gpio_num = DISPLAY_CS_PIN;
+        io_config.dc_gpio_num = GPIO_NUM_NC;
+        io_config.spi_mode = 3;
+        io_config.pclk_hz = 40 * 1000 * 1000;
+        io_config.trans_queue_depth = 10;
+        io_config.lcd_cmd_bits = 32;
+        io_config.lcd_param_bits = 8;
+        io_config.flags.quad_mode = true;
         ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI2_HOST, &io_config, &panel_io));
 
         // 初始化液晶屏驱动芯片
@@ -236,12 +245,11 @@ private:
                 .use_qspi_interface = 1,
             },
         };
-        esp_lcd_panel_dev_config_t panel_config = {
-            .reset_gpio_num = DISPLAY_RST_PIN,
-            .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
-            .bits_per_pixel = 16,
-            .vendor_config = (void *)&vendor_config,
-        };
+        esp_lcd_panel_dev_config_t panel_config = {};
+        panel_config.rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB;
+        panel_config.bits_per_pixel = 16;
+        panel_config.reset_gpio_num = DISPLAY_RST_PIN;
+        panel_config.vendor_config = (void *)&vendor_config;
         esp_lcd_new_panel_axs15231b(panel_io, &panel_config, &panel);
 
         esp_lcd_panel_reset(panel);

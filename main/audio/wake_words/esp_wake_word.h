@@ -28,11 +28,13 @@ public:
     void EncodeWakeWordData();
     bool GetWakeWordOpus(std::vector<uint8_t>& opus);
     const std::string& GetLastDetectedWakeWord() const { return last_detected_wake_word_; }
+    std::vector<std::string> GetWakeWords() const override;
 
 private:
     esp_wn_iface_t *wakenet_iface_ = nullptr;
     model_iface_data_t *wakenet_data_ = nullptr;
     srmodel_list_t *wakenet_model_ = nullptr;
+    bool owns_models_ = false;
     AudioCodec* codec_ = nullptr;
     std::atomic<bool> running_ = false;
 

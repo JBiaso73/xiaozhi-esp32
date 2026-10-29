@@ -1,6 +1,8 @@
 #include "es8311_audio_codec.h"
 
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #define TAG "Es8311AudioCodec"
 
@@ -36,6 +38,7 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     };
     ctrl_if_ = audio_codec_new_i2c_ctrl(&i2c_cfg);
     assert(ctrl_if_ != NULL);
+    ResetCodec();
 
     gpio_if_ = audio_codec_new_gpio();
     assert(gpio_if_ != NULL);
@@ -56,6 +59,17 @@ Es8311AudioCodec::Es8311AudioCodec(void* i2c_master_handle, i2c_port_t i2c_port,
     } else {
         ESP_LOGI(TAG, "Es8311AudioCodec initialized");
     }
+}
+
+void Es8311AudioCodec::ResetCodec() {
+    // Hold the ES8311 digital blocks in reset for several milliseconds, as
+    // recommended by the initialization guide. Normal codec initialization
+    // releases the reset and starts the state machine.
+    uint8_t reset_value = 0x1F;
+    ESP_ERROR_CHECK(static_cast<esp_err_t>(
+        ctrl_if_->write_reg(ctrl_if_, 0x00, 1, &reset_value, 1)));
+    vTaskDelay(pdMS_TO_TICKS(5));
+    ESP_LOGI(TAG, "ES8311 software reset complete");
 }
 
 Es8311AudioCodec::~Es8311AudioCodec() {
@@ -88,7 +102,8 @@ void Es8311AudioCodec::UpdateDeviceState() {
         ESP_ERROR_CHECK(esp_codec_dev_set_in_gain(dev_, input_gain_));
         ESP_ERROR_CHECK(esp_codec_dev_set_out_vol(dev_, output_volume_));
     } else if (!input_enabled_ && !output_enabled_ && dev_ != nullptr) {
-        esp_codec_dev_close(dev_);
+        ESP_ERROR_CHECK(esp_codec_dev_close(dev_));
+        esp_codec_dev_delete(dev_);
         dev_ = nullptr;
     }
     if (pa_pin_ != GPIO_NUM_NC) {
@@ -115,10 +130,10 @@ void Es8311AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
         .clk_cfg = {
             .sample_rate_hz = (uint32_t)output_sample_rate_,
             .clk_src = I2S_CLK_SRC_DEFAULT,
+#if SOC_I2S_HW_VERSION_2
+            .ext_clk_freq_hz = 0,
+#endif
             .mclk_multiple = I2S_MCLK_MULTIPLE_256,
-			#ifdef   I2S_HW_VERSION_2    
-				.ext_clk_freq_hz = 0,
-			#endif
         },
         .slot_cfg = {
             .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
@@ -128,11 +143,11 @@ void Es8311AudioCodec::CreateDuplexChannels(gpio_num_t mclk, gpio_num_t bclk, gp
             .ws_width = I2S_DATA_BIT_WIDTH_16BIT,
             .ws_pol = false,
             .bit_shift = true,
-            #ifdef   I2S_HW_VERSION_2   
-                .left_align = true,
-                .big_endian = false,
-                .bit_order_lsb = false
-            #endif
+#if SOC_I2S_HW_VERSION_2
+            .left_align = true,
+            .big_endian = false,
+            .bit_order_lsb = false
+#endif
         },
         .gpio_cfg = {
             .mclk = mclk,

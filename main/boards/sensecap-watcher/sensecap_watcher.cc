@@ -132,7 +132,16 @@ private:
             bool is_charging = (IoExpanderGetLevel(BSP_PWR_VBUS_IN_DET) == 0);
             if (is_charging) {
                 ESP_LOGI(TAG, "charging");
-                GetBacklight()->SetBrightness(0);
+                // Serialize with battery polling on the main task. USB may have
+                // disconnected by the time the request is handled.
+                Application::GetInstance().Schedule([this]() {
+                    power_save_timer_->SetEnabled(false);
+                    if (IoExpanderGetLevel(BSP_PWR_VBUS_IN_DET) == 0) {
+                        GetBacklight()->SetBrightness(0);
+                    } else {
+                        power_save_timer_->SetEnabled(true);
+                    }
+                });
             } else {
                 IoExpanderSetLevel(BSP_PWR_SYSTEM, 0);
             }
@@ -334,7 +343,7 @@ private:
         ESP_LOGI(TAG, "Install panel IO");
         const esp_lcd_panel_io_spi_config_t io_config = {
             .cs_gpio_num = BSP_LCD_SPI_CS,
-            .dc_gpio_num = -1,
+            .dc_gpio_num = GPIO_NUM_NC,
             .spi_mode = 3,
             .pclk_hz = DRV_LCD_PIXEL_CLK_HZ,
             .trans_queue_depth = 2,
@@ -352,12 +361,11 @@ private:
         esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BSP_LCD_SPI_NUM, &io_config, &panel_io_);
     
         ESP_LOGD(TAG, "Install LCD driver");
-        const esp_lcd_panel_dev_config_t panel_config = {
-            .reset_gpio_num = BSP_LCD_GPIO_RST, // Shared with Touch reset
-            .rgb_ele_order = DRV_LCD_RGB_ELEMENT_ORDER,
-            .bits_per_pixel = DRV_LCD_BITS_PER_PIXEL,
-            .vendor_config = &vendor_config,
-        };
+        esp_lcd_panel_dev_config_t panel_config = {};
+        panel_config.rgb_ele_order = DRV_LCD_RGB_ELEMENT_ORDER;
+        panel_config.bits_per_pixel = DRV_LCD_BITS_PER_PIXEL;
+        panel_config.reset_gpio_num = BSP_LCD_GPIO_RST; // Shared with Touch reset
+        panel_config.vendor_config = &vendor_config;
         esp_lcd_new_panel_spd2010(panel_io_, &panel_config, &panel_);
 
         esp_lcd_panel_reset(panel_);
@@ -640,16 +648,14 @@ public:
         WifiBoard::SetPowerSaveLevel(level);
     }
 
-    virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
-        static bool last_discharging = false;
+    virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
         charging = (IoExpanderGetLevel(BSP_PWR_VBUS_IN_DET) == 0);
         discharging = !charging;
         level = (int)BatterygetPercent(false);
 
-        if (discharging != last_discharging) {
-            power_save_timer_->SetEnabled(discharging);
-            last_discharging = discharging;
-        }
+        // Always synchronize, including the first snapshot and a short USB
+        // connection observed only by the shutdown callback. Re-enabling is a no-op.
+        power_save_timer_->SetEnabled(discharging);
         if (level <= 1  &&  discharging) {
             ESP_LOGI(TAG, "Battery level is low, shutting down");
             IoExpanderSetLevel(BSP_PWR_SYSTEM, 0);
