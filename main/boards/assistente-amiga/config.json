@@ -1,0 +1,10 @@
+{
+    "type": "assistente-amiga",
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "assistente-amiga",
+            "sdkconfig_append": []
+        }
+    ]
+}
