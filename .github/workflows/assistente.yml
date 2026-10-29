@@ -1,0 +1,112 @@
+# Compila o firmware da assistente no GitHub, sem instalar nada no seu PC.
+# GitHub > aba "Actions" > "Firmware da Assistente" > "Run workflow".
+#
+# Modos:
+#  instalacao  -> gera merged-binary.bin COM Wi-Fi e senhas (dos "Secrets").
+#                 Baixe em "Artifacts" e grave pelo USB (navegador). Nunca é publicado.
+#  atualizacao -> gera o firmware SEM segredos e publica no ramo "ota".
+#                 O aparelho dela confere a cada 12 h (ou ao religar) e se atualiza sozinho.
+#
+# Secrets necessários (Settings > Secrets and variables > Actions):
+#   APPS_SCRIPT_URL, APPS_SCRIPT_TOKEN, WIFI_2_SSID, WIFI_2_SENHA
+#   opcionais: WIFI_1_SSID, WIFI_1_SENHA (sua rede, para testar em casa)
+
+name: Firmware da Assistente
+
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "instalacao (USB) ou atualizacao (remota)"
+        type: choice
+        options: [instalacao, atualizacao]
+        default: instalacao
+      nome:
+        description: "Nome que acorda a assistente (use o MESMO na instalação e nas atualizações)"
+        type: choice
+        options:
+          - "wn9_sophia_tts      | Sophia (feminino)"
+          - "wn9_hijoy_tts       | Hi Joy (feminino)"
+          - "wn9_heywanda_tts    | Hey Wanda (feminino)"
+          - "wn9_heywillow_tts   | Hey Willow (feminino)"
+          - "wn9_heyivy_tts2     | Hey Ivy (feminino)"
+          - "wn9_jarvis_tts      | Jarvis (masculino)"
+          - "wn9_hijason_tts2    | Hi Jason (masculino)"
+          - "wn9_hiandy_tts2     | Hi Andy (masculino)"
+          - "wn9_mycroft_tts     | Mycroft (masculino)"
+          - "wn9_computer_tts    | Computer (neutro)"
+        default: "wn9_sophia_tts      | Sophia (feminino)"
+      lembrete_falado:
+        description: "A IA fala os lembretes em voz alta (além de tela + som)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:release-v6.1
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v7
+
+      - name: Registrar a placa e gerar configuração
+        shell: bash
+        env:
+          ASSISTENTE_VERSAO: ${{ github.run_number }}
+          LEMBRETE_FALADO: ${{ inputs.lembrete_falado && '1' || '0' }}
+          WIFI_1_SSID: ${{ secrets.WIFI_1_SSID }}
+          WIFI_1_SENHA: ${{ secrets.WIFI_1_SENHA }}
+          WIFI_2_SSID: ${{ secrets.WIFI_2_SSID }}
+          WIFI_2_SENHA: ${{ secrets.WIFI_2_SENHA }}
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
+          OTA_MANIFESTO_URL: https://raw.githubusercontent.com/${{ github.repository }}/ota/manifest.json
+        run: |
+          python assistente/instalar_placa.py --registrar
+          if [[ "${{ inputs.modo }}" == "atualizacao" ]]; then
+            python assistente/instalar_placa.py --gerar --sem-segredos
+          else
+            python assistente/instalar_placa.py --gerar
+          fi
+
+      - name: Compilar (português do Brasil)
+        shell: bash
+        run: |
+          source "$IDF_PATH/export.sh"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          WAKE_WORD=$(echo "${{ inputs.nome }}" | cut -d'|' -f1 | xargs)
+          echo "Palavra de ativação: $WAKE_WORD"
+          python scripts/build.py assistente-amiga --language pt-BR --wake-word "$WAKE_WORD"
+          mkdir -p saida
+          cp build/xiaozhi.bin saida/
+          if [[ "${{ inputs.modo }}" == "instalacao" ]]; then
+            cp build/merged-binary.bin "saida/assistente-instalacao-v${{ github.run_number }}.bin"
+          fi
+
+      - name: Guardar o firmware para baixar
+        uses: actions/upload-artifact@v7
+        with:
+          name: assistente-${{ inputs.modo }}-v${{ github.run_number }}
+          path: saida/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publicar atualização remota (ramo "ota")
+        if: ${{ inputs.modo == 'atualizacao' }}
+        shell: bash
+        run: |
+          VERSAO=${{ github.run_number }}
+          URL_BASE="https://raw.githubusercontent.com/${{ github.repository }}/ota"
+          rm -rf /tmp/ota && mkdir -p /tmp/ota && cd /tmp/ota
+          git init -q -b ota
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          cp "$GITHUB_WORKSPACE/build/xiaozhi.bin" "firmware-v${VERSAO}.bin"
+          printf '{\n  "versao": "%s",\n  "url": "%s/firmware-v%s.bin"\n}\n' "$VERSAO" "$URL_BASE" "$VERSAO" > manifest.json
+          git add . && git commit -q -m "Atualização remota v${VERSAO}"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ota
+          echo "Publicado: ${URL_BASE}/manifest.json -> versão ${VERSAO}"
