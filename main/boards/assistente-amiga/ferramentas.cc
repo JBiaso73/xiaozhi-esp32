@@ -13,11 +13,14 @@
 
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <ssid_manager.h>
 
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <expected>
@@ -46,6 +49,25 @@ std::string g_url;      // URL do Google Apps Script (/exec)
 std::string g_token;    // senha combinada com o Apps Script
 std::string g_ota_url;  // manifest.json da atualização remota
 std::atomic<bool> g_encerrando{false};
+
+// --- Medidor do microfone e modo vigia ------------------------------------
+// Os níveis são guardados em décimos de dB (dBFS), ex.: -425 = -42,5 dB.
+constexpr int kSemSom = -1000;
+std::atomic<int> g_mic_atual{kSemSom};   // nível do último pedacinho de 10 ms
+std::atomic<int> g_mic_pico{kSemSom};    // maior nível desde o último relatório
+std::atomic<int> g_mic_fundo{kSemSom};   // ruído de fundo estimado (ambiente calmo)
+std::atomic<bool> g_ocioso{false};       // aparelho em espera (não está conversando)
+std::atomic<bool> g_vigia_ativo{false};  // o servidor diz que é horário de vigia
+std::atomic<int> g_vigia_limiar_db{18};  // quantos dB acima do fundo contam como barulho
+std::atomic<uint32_t> g_silencio_ate_ms{0};  // ignora o próprio som de aviso do aparelho
+std::atomic<bool> g_barulho_pendente{false};
+std::atomic<int> g_barulho_pico{kSemSom};
+std::atomic<int> g_barulho_duracao_ms{0};
+std::atomic<int> g_toques{0};             // mudanças no sensor de toque desde o último relatório
+
+int64_t AgoraMs() {
+    return esp_timer_get_time() / 1000;
+}
 
 // -----------------------------------------------------------------------------
 // HTTP com redirecionamento manual (o Apps Script sempre responde 302).
@@ -189,9 +211,32 @@ void Disparar(TaskFunction_t funcao, const char* nome) {
 // Tarefa de fundo: lembretes, sinal de vida e atualização remota
 // -----------------------------------------------------------------------------
 void VerificarLembretes() {
-    auto r = ChamarScript("pendentes");
+    // Junto com o "sinal de vida" vai o nível do microfone, para o painel
+    // mostrar se ele está ouvindo (diagnóstico à distância).
+    cJSON* dados = cJSON_CreateObject();
+    const int pico = g_mic_pico.exchange(kSemSom);
+    // Números inteiros (dB): o printf deste firmware não formata casas decimais.
+    cJSON_AddNumberToObject(dados, "mic_pico", pico / 10);
+    cJSON_AddNumberToObject(dados, "mic_fundo", g_mic_fundo.load() / 10);
+    cJSON_AddNumberToObject(dados, "toques", g_toques.exchange(0));
+    auto r = ChamarScript("pendentes", dados);
     if (!r) {
         return;
+    }
+    // Configuração do modo vigia (horários e sensibilidade ficam no Apps Script)
+    cJSON* vigia = cJSON_GetObjectItem(r->get(), "vigia");
+    if (cJSON_IsObject(vigia)) {
+        cJSON* ativo = cJSON_GetObjectItem(vigia, "ativo");
+        cJSON* limiar = cJSON_GetObjectItem(vigia, "limiar");
+        const bool estava = g_vigia_ativo.load();
+        g_vigia_ativo = cJSON_IsTrue(ativo);
+        if (cJSON_IsNumber(limiar) && limiar->valueint >= 6 && limiar->valueint <= 40) {
+            g_vigia_limiar_db = limiar->valueint;
+        }
+        if (estava != g_vigia_ativo.load()) {
+            ESP_LOGI(TAG, "Modo vigia %s (limiar %d dB)", g_vigia_ativo.load() ? "LIGADO" : "desligado",
+                     g_vigia_limiar_db.load());
+        }
     }
     cJSON* itens = cJSON_GetObjectItem(r->get(), "itens");
     if (!cJSON_IsArray(itens) || cJSON_GetArraySize(itens) == 0) {
@@ -218,6 +263,7 @@ void VerificarLembretes() {
         if (app.GetDeviceState() != kDeviceStateIdle) {
             return;
         }
+        g_silencio_ate_ms = static_cast<uint32_t>(AgoraMs() + 5000);  // o próprio aviso não conta
         app.Alert("Lembrete", texto.c_str(), "winking", Lang::Sounds::OGG_POPUP);
 #if LEMBRETE_FALADO
         // Pede para a IA falar o lembrete em voz alta (uma frase curta).
@@ -272,23 +318,55 @@ void VerificarAtualizacao() {
     });
 }
 
+void AvisarBarulho() {
+    cJSON* dados = cJSON_CreateObject();
+    cJSON_AddNumberToObject(dados, "pico", g_barulho_pico.load() / 10);
+    cJSON_AddNumberToObject(dados, "fundo", g_mic_fundo.load() / 10);
+    cJSON_AddNumberToObject(dados, "duracao_ms", g_barulho_duracao_ms.load());
+    auto r = ChamarScript("barulho", dados);
+    ESP_LOGI(TAG, "Barulho no modo vigia (pico %d dB): %s", g_barulho_pico.load() / 10,
+             r ? "avisado" : r.error().c_str());
+}
+
 void TarefaVigia(void*) {
     vTaskDelay(pdMS_TO_TICKS(45 * 1000));  // deixa o aparelho terminar de ligar
-    const uint32_t ciclos_ota =
-        (kHorasEntreAtualizacoes * 60) / (INTERVALO_VERIFICACAO_MIN > 0 ? INTERVALO_VERIFICACAO_MIN : 2);
+    constexpr int kMinutos = INTERVALO_VERIFICACAO_MIN > 0 ? INTERVALO_VERIFICACAO_MIN : 2;
+    constexpr uint32_t kSegundosPorCiclo = kMinutos * 60;
+    constexpr uint32_t kCiclosOta = (kHorasEntreAtualizacoes * 60) / kMinutos;
+    constexpr int64_t kIntervaloBarulhoMs = 5 * 60 * 1000;  // no máximo 1 aviso a cada 5 min
+    uint32_t segundo = 0;
     uint32_t ciclo = 0;
+    int64_t ultimo_barulho_ms = -kIntervaloBarulhoMs;
     while (true) {
         auto& app = Application::GetInstance();
-        if (app.GetDeviceState() == kDeviceStateIdle) {
+        const bool ocioso = app.GetDeviceState() == kDeviceStateIdle;
+        g_ocioso = ocioso;
+
+        if (g_barulho_pendente.exchange(false) && ocioso && g_vigia_ativo.load() && !g_url.empty()) {
+            const int64_t agora = AgoraMs();
+            if (agora - ultimo_barulho_ms >= kIntervaloBarulhoMs) {
+                ultimo_barulho_ms = agora;
+                AvisarBarulho();
+            }
+        }
+
+        if (segundo % 10 == 0) {
+            ESP_LOGI(TAG, "Microfone: agora %d dB | fundo %d dB | vigia %s",
+                     g_mic_atual.load() / 10, g_mic_fundo.load() / 10,
+                     g_vigia_ativo.load() ? "ligado" : "desligado");
+        }
+
+        if (segundo % kSegundosPorCiclo == 0 && ocioso) {
             if (!g_url.empty()) {
                 VerificarLembretes();  // também serve de "sinal de vida"
             }
-            if (!g_ota_url.empty() && (ciclo % ciclos_ota) == 0) {
+            if (!g_ota_url.empty() && (ciclo % kCiclosOta) == 0) {
                 VerificarAtualizacao();
             }
             ++ciclo;
         }
-        vTaskDelay(pdMS_TO_TICKS(INTERVALO_VERIFICACAO_MIN * 60 * 1000));
+        ++segundo;
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -428,6 +506,86 @@ void IniciarVigia() {
 
 void EncerrarConversaAgora() {
     Disparar(TarefaEncerrarAgora, "encerrar_agora");
+}
+
+void RegistrarToque() {
+    g_toques.fetch_add(1, std::memory_order_relaxed);
+}
+
+// Chamado pela tarefa de áudio a cada leitura do microfone (~10 ms).
+// Precisa ser rápido: só contas simples, nada de rede nem memória.
+// Nenhum áudio é guardado ou enviado: só o NÍVEL do som.
+void MedirSom(const int16_t* amostras, int quantidade) {
+    if (amostras == nullptr || quantidade <= 0) {
+        return;
+    }
+    int64_t soma = 0;
+    for (int i = 0; i < quantidade; ++i) {
+        const int32_t v = amostras[i];
+        soma += v * v;
+    }
+    const float media = static_cast<float>(soma) / static_cast<float>(quantidade);
+    const float db = media >= 1.0f ? 10.0f * log10f(media / (32767.0f * 32767.0f)) : -96.0f;
+    const int db10 = static_cast<int>(db * 10.0f);
+    g_mic_atual.store(db10, std::memory_order_relaxed);
+    if (db10 > g_mic_pico.load(std::memory_order_relaxed)) {
+        g_mic_pico.store(db10, std::memory_order_relaxed);
+    }
+
+    // Ruído de fundo: desce rápido quando fica silêncio e sobe bem devagar,
+    // para um ruído contínuo (ventilador, ar-condicionado) virar o "normal".
+    static float fundo = 0.0f;
+    static bool fundo_iniciado = false;
+    if (!fundo_iniciado) {
+        fundo = db;
+        fundo_iniciado = true;
+    } else if (db < fundo) {
+        fundo += (db - fundo) * 0.01f;
+    } else if (db < fundo + 6.0f) {
+        fundo += (db - fundo) * 0.002f;
+    } else {
+        fundo += (db - fundo) * 0.0002f;
+    }
+    g_mic_fundo.store(static_cast<int>(fundo * 10.0f), std::memory_order_relaxed);
+
+    // Modo vigia: barulho = som bem acima do fundo somando pelo menos 0,3 s
+    // dentro de uma janela de 3 s (vozes, passos, objetos; um estalo isolado não conta).
+    constexpr float kMinimoAbsolutoDb = -50.0f;
+    constexpr int kQuadrosParaDisparar = 30;
+    constexpr uint32_t kJanelaMs = 3000;
+    static uint32_t janela_inicio = 0;
+    static int quadros_altos = 0;
+    static int pico_janela = kSemSom;
+    static bool disparou = false;
+
+    const uint32_t agora = static_cast<uint32_t>(AgoraMs());
+    const bool em_silencio =
+        static_cast<int32_t>(agora - g_silencio_ate_ms.load(std::memory_order_relaxed)) < 0;
+    if (!g_vigia_ativo.load(std::memory_order_relaxed) || !g_ocioso.load(std::memory_order_relaxed) ||
+        em_silencio) {
+        quadros_altos = 0;
+        disparou = false;
+        return;
+    }
+    if (agora - janela_inicio > kJanelaMs) {
+        janela_inicio = agora;
+        quadros_altos = 0;
+        pico_janela = kSemSom;
+        disparou = false;
+    }
+    const float limiar = fundo + static_cast<float>(g_vigia_limiar_db.load(std::memory_order_relaxed));
+    if (db > limiar && db > kMinimoAbsolutoDb) {
+        ++quadros_altos;
+        if (db10 > pico_janela) {
+            pico_janela = db10;
+        }
+    }
+    if (!disparou && quadros_altos >= kQuadrosParaDisparar) {
+        disparou = true;
+        g_barulho_pico.store(pico_janela, std::memory_order_relaxed);
+        g_barulho_duracao_ms.store(quadros_altos * 10, std::memory_order_relaxed);
+        g_barulho_pendente.store(true, std::memory_order_release);
+    }
 }
 
 }  // namespace assistente

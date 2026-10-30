@@ -8,6 +8,10 @@
 //  - ferramenta para a própria IA encerrar a conversa ("não é com você")
 //  - atualização remota do firmware a partir do GitHub do dono
 //  - "sinal de vida" a cada poucos minutos, para o dono saber se está online
+//  - nível do microfone no painel (diagnóstico à distância)
+//  - modo vigia: fora do horário, barulho forte gera um e-mail de aviso
+
+#include <cstdint>
 
 namespace assistente {
 
@@ -24,6 +28,13 @@ void IniciarVigia();
 
 // Encerra a conversa imediatamente (usado ao segurar o sensor de toque).
 void EncerrarConversaAgora();
+
+// Conta uma mudança no sensor de toque (diagnóstico mostrado no painel).
+void RegistrarToque();
+
+// Mede o nível do microfone (chamado pelo codec a cada leitura, ~10 ms).
+// Alimenta o diagnóstico do painel e o modo vigia. Não grava áudio.
+void MedirSom(const int16_t* amostras, int quantidade);
 
 }  // namespace assistente
 
