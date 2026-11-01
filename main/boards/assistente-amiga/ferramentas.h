@@ -34,7 +34,12 @@ void RegistrarToque();
 
 // Mede o nível do microfone (chamado pelo codec a cada leitura, ~10 ms).
 // Alimenta o diagnóstico do painel e o modo vigia. Não grava áudio.
-void MedirSom(const int16_t* amostras, int quantidade);
+// "cortes" = amostras que saturaram (som alto demais para o ganho atual).
+void MedirSom(const int16_t* amostras, int quantidade, int cortes);
+
+// Quantos bits o som do microfone é deslocado (12 = padrão do XiaoZhi).
+// Maior = menos ganho. Ajustado à distância pelo MIC_AJUSTE_DB do Apps Script.
+int DeslocamentoMic();
 
 }  // namespace assistente
 

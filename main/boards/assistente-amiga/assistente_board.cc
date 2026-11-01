@@ -16,6 +16,7 @@
 #include "ferramentas.h"
 
 #include <driver/gpio.h>
+#include <driver/i2s_std.h>
 #include <esp_log.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -26,20 +27,48 @@
 #include <driver/spi_common.h>
 #include "esp_lcd_gc9a01.h"
 
+#include <cstdint>
+#include <vector>
+
 #define TAG "AssistenteBoard"
 
-// Mesmo codec do padrão (INMP441 + MAX98357A), mas que também mede o nível
-// do microfone a cada leitura: alimenta o painel e o modo vigia.
+// Mesmo codec do padrão (INMP441 + MAX98357A), com duas diferenças na leitura
+// do microfone:
+//  - o ganho é ajustável à distância (deslocamento de bits; 12 = igual ao padrão);
+//  - mede o nível e conta as saturações, para o painel e o modo vigia.
 class CodecComMedidor : public NoAudioCodecSimplex {
 public:
     using NoAudioCodecSimplex::NoAudioCodecSimplex;
 
 protected:
     int Read(int16_t* dest, int samples) override {
-        const int lidas = NoAudioCodecSimplex::Read(dest, samples);
-        assistente::MedirSom(dest, lidas);
+        if (static_cast<int>(bruto_.size()) < samples) {
+            bruto_.resize(samples);
+        }
+        size_t bytes_lidos = 0;
+        if (i2s_channel_read(rx_handle_, bruto_.data(), samples * sizeof(int32_t), &bytes_lidos, 200) != ESP_OK) {
+            return 0;
+        }
+        const int lidas = static_cast<int>(bytes_lidos / sizeof(int32_t));
+        const int desloc = assistente::DeslocamentoMic();
+        int cortes = 0;
+        for (int i = 0; i < lidas; ++i) {
+            int32_t v = bruto_[i] >> desloc;
+            if (v > INT16_MAX) {
+                v = INT16_MAX;
+                ++cortes;
+            } else if (v < -INT16_MAX) {
+                v = -INT16_MAX;
+                ++cortes;
+            }
+            dest[i] = static_cast<int16_t>(v);
+        }
+        assistente::MedirSom(dest, lidas, cortes);
         return lidas;
     }
+
+private:
+    std::vector<int32_t> bruto_;  // usado só pela tarefa de áudio
 };
 
 // -----------------------------------------------------------------------------

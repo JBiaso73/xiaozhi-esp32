@@ -17,6 +17,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <ssid_manager.h>
+#include <wifi_manager.h>
 
 #include <atomic>
 #include <cmath>
@@ -63,7 +64,10 @@ std::atomic<uint32_t> g_silencio_ate_ms{0};  // ignora o próprio som de aviso d
 std::atomic<bool> g_barulho_pendente{false};
 std::atomic<int> g_barulho_pico{kSemSom};
 std::atomic<int> g_barulho_duracao_ms{0};
-std::atomic<int> g_toques{0};             // mudanças no sensor de toque desde o último relatório
+std::atomic<int> g_toques{0};
+constexpr int kDeslocamentoPadrao = 12;    // o mesmo do codec original do XiaoZhi
+std::atomic<int> g_mic_desloc{kDeslocamentoPadrao};
+std::atomic<int> g_mic_cortes{0};          // amostras saturadas desde o último relatório             // mudanças no sensor de toque desde o último relatório
 
 int64_t AgoraMs() {
     return esp_timer_get_time() / 1000;
@@ -219,6 +223,9 @@ void VerificarLembretes() {
     cJSON_AddNumberToObject(dados, "mic_pico", pico / 10);
     cJSON_AddNumberToObject(dados, "mic_fundo", g_mic_fundo.load() / 10);
     cJSON_AddNumberToObject(dados, "toques", g_toques.exchange(0));
+    cJSON_AddNumberToObject(dados, "mic_cortes", g_mic_cortes.exchange(0));
+    cJSON_AddNumberToObject(dados, "mic_ajuste_db", (kDeslocamentoPadrao - g_mic_desloc.load()) * 6);
+    cJSON_AddNumberToObject(dados, "wifi_rssi", WifiManager::GetInstance().GetRssi());
     auto r = ChamarScript("pendentes", dados);
     if (!r) {
         return;
@@ -236,6 +243,20 @@ void VerificarLembretes() {
         if (estava != g_vigia_ativo.load()) {
             ESP_LOGI(TAG, "Modo vigia %s (limiar %d dB)", g_vigia_ativo.load() ? "LIGADO" : "desligado",
                      g_vigia_limiar_db.load());
+        }
+    }
+    // Ganho do microfone, ajustável à distância (MIC_AJUSTE_DB no Apps Script).
+    cJSON* mic = cJSON_GetObjectItem(r->get(), "mic");
+    if (cJSON_IsObject(mic)) {
+        cJSON* ajuste = cJSON_GetObjectItem(mic, "ajuste_db");
+        if (cJSON_IsNumber(ajuste)) {
+            int desloc = kDeslocamentoPadrao - ajuste->valueint / 6;
+            desloc = desloc < 10 ? 10 : (desloc > 15 ? 15 : desloc);
+            if (desloc != g_mic_desloc.load()) {
+                g_mic_desloc = desloc;
+                Settings(kNvs, true).SetInt("mic_desloc", desloc);
+                ESP_LOGI(TAG, "Ganho do microfone ajustado: %d dB", (kDeslocamentoPadrao - desloc) * 6);
+            }
         }
     }
     cJSON* itens = cJSON_GetObjectItem(r->get(), "itens");
@@ -414,6 +435,11 @@ void Inicializar() {
         settings.EraseKey("ota_tent");
     }
 
+    {
+        const int desloc = settings.GetInt("mic_desloc", kDeslocamentoPadrao);
+        g_mic_desloc = (desloc >= 10 && desloc <= 15) ? desloc : kDeslocamentoPadrao;
+    }
+
     CadastrarWifi(WIFI_1_SSID, WIFI_1_SENHA);
     CadastrarWifi(WIFI_2_SSID, WIFI_2_SENHA);
 
@@ -515,9 +541,16 @@ void RegistrarToque() {
 // Chamado pela tarefa de áudio a cada leitura do microfone (~10 ms).
 // Precisa ser rápido: só contas simples, nada de rede nem memória.
 // Nenhum áudio é guardado ou enviado: só o NÍVEL do som.
-void MedirSom(const int16_t* amostras, int quantidade) {
+int DeslocamentoMic() {
+    return g_mic_desloc.load(std::memory_order_relaxed);
+}
+
+void MedirSom(const int16_t* amostras, int quantidade, int cortes) {
     if (amostras == nullptr || quantidade <= 0) {
         return;
+    }
+    if (cortes > 0) {
+        g_mic_cortes.fetch_add(cortes, std::memory_order_relaxed);
     }
     int64_t soma = 0;
     for (int i = 0; i < quantidade; ++i) {
