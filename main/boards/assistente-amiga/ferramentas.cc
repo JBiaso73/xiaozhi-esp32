@@ -67,7 +67,10 @@ std::atomic<int> g_barulho_duracao_ms{0};
 std::atomic<int> g_toques{0};
 constexpr int kDeslocamentoPadrao = 12;    // o mesmo do codec original do XiaoZhi
 std::atomic<int> g_mic_desloc{kDeslocamentoPadrao};
-std::atomic<int> g_mic_cortes{0};          // amostras saturadas desde o último relatório             // mudanças no sensor de toque desde o último relatório
+std::atomic<int> g_mic_cortes{0};          // amostras saturadas desde o último relatório
+std::atomic<int> g_canal_esq{0};           // energia média dos canais (diagnóstico)
+std::atomic<int> g_canal_dir{0};
+std::atomic<bool> g_canal_direito{false};  // true = o som está vindo pelo canal direito             // mudanças no sensor de toque desde o último relatório
 
 int64_t AgoraMs() {
     return esp_timer_get_time() / 1000;
@@ -226,6 +229,7 @@ void VerificarLembretes() {
     cJSON_AddNumberToObject(dados, "mic_cortes", g_mic_cortes.exchange(0));
     cJSON_AddNumberToObject(dados, "mic_ajuste_db", (kDeslocamentoPadrao - g_mic_desloc.load()) * 6);
     cJSON_AddNumberToObject(dados, "wifi_rssi", WifiManager::GetInstance().GetRssi());
+    cJSON_AddStringToObject(dados, "mic_canal", g_canal_direito.load() ? "direito" : "esquerdo");
     auto r = ChamarScript("pendentes", dados);
     if (!r) {
         return;
@@ -372,8 +376,9 @@ void TarefaVigia(void*) {
         }
 
         if (segundo % 10 == 0) {
-            ESP_LOGI(TAG, "Microfone: agora %d dB | fundo %d dB | vigia %s",
+            ESP_LOGI(TAG, "Microfone: agora %d dB | fundo %d dB | canal %s (esq %d, dir %d) | vigia %s",
                      g_mic_atual.load() / 10, g_mic_fundo.load() / 10,
+                     g_canal_direito.load() ? "DIREITO" : "esquerdo", g_canal_esq.load(), g_canal_dir.load(),
                      g_vigia_ativo.load() ? "ligado" : "desligado");
         }
 
@@ -541,6 +546,16 @@ void RegistrarToque() {
 // Chamado pela tarefa de áudio a cada leitura do microfone (~10 ms).
 // Precisa ser rápido: só contas simples, nada de rede nem memória.
 // Nenhum áudio é guardado ou enviado: só o NÍVEL do som.
+void InformarCanais(float energia_esquerda, float energia_direita, bool usando_direito) {
+    g_canal_esq.store(static_cast<int>(energia_esquerda), std::memory_order_relaxed);
+    g_canal_dir.store(static_cast<int>(energia_direita), std::memory_order_relaxed);
+    const bool antes = g_canal_direito.exchange(usando_direito, std::memory_order_relaxed);
+    if (antes != usando_direito) {
+        ESP_LOGW(TAG, "Microfone: usando o canal %s (confira o pino L/R do INMP441 no GND)",
+                 usando_direito ? "DIREITO" : "esquerdo");
+    }
+}
+
 int DeslocamentoMic() {
     return g_mic_desloc.load(std::memory_order_relaxed);
 }

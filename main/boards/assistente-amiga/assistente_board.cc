@@ -32,28 +32,81 @@
 
 #define TAG "AssistenteBoard"
 
-// Mesmo codec do padrão (INMP441 + MAX98357A), com duas diferenças na leitura
+// Mesmo codec do padrão (INMP441 + MAX98357A), com estas diferenças na leitura
 // do microfone:
-//  - o ganho é ajustável à distância (deslocamento de bits; 12 = igual ao padrão);
-//  - mede o nível e conta as saturações, para o painel e o modo vigia.
+//  - lê os DOIS canais do I2S e usa sozinho o que tem som. Assim funciona mesmo
+//    se o pino L/R do INMP441 estiver no 3V3, solto ou com mau contato (nesse
+//    caso o som vem pelo canal direito e o firmware original só ouvia silêncio);
+//  - ganho ajustável à distância (deslocamento de bits; 12 = igual ao padrão);
+//  - mede o nível, conta saturações e informa o canal usado (painel e logs);
+//  - clock do microfone com força de saída menor, para fios longos não "tocarem".
 class CodecComMedidor : public NoAudioCodecSimplex {
 public:
-    using NoAudioCodecSimplex::NoAudioCodecSimplex;
+    CodecComMedidor(int input_sample_rate, int output_sample_rate, gpio_num_t spk_bclk,
+                    gpio_num_t spk_ws, gpio_num_t spk_dout, gpio_num_t mic_sck,
+                    gpio_num_t mic_ws, gpio_num_t mic_din)
+        : NoAudioCodecSimplex(input_sample_rate, output_sample_rate, spk_bclk, spk_ws, spk_dout,
+                              mic_sck, mic_ws, mic_din) {
+        i2s_std_slot_config_t slot = {};
+        slot.data_bit_width = I2S_DATA_BIT_WIDTH_32BIT;
+        slot.slot_bit_width = I2S_SLOT_BIT_WIDTH_AUTO;
+        slot.slot_mode = I2S_SLOT_MODE_STEREO;
+        slot.slot_mask = I2S_STD_SLOT_BOTH;
+        slot.ws_width = I2S_DATA_BIT_WIDTH_32BIT;
+        slot.ws_pol = false;
+        slot.bit_shift = true;
+#if SOC_I2S_HW_VERSION_2
+        slot.left_align = true;
+        slot.big_endian = false;
+        slot.bit_order_lsb = false;
+#endif
+        const esp_err_t err = i2s_channel_reconfig_std_slot(rx_handle_, &slot);
+        estereo_ = (err == ESP_OK);
+        ESP_LOGI("CodecComMedidor", "Microfone em modo %s", estereo_ ? "dois canais (automatico)" : "canal esquerdo");
+        gpio_set_drive_capability(mic_sck, GPIO_DRIVE_CAP_1);
+        gpio_set_drive_capability(mic_ws, GPIO_DRIVE_CAP_1);
+    }
 
 protected:
     int Read(int16_t* dest, int samples) override {
-        if (static_cast<int>(bruto_.size()) < samples) {
-            bruto_.resize(samples);
+        const int por_amostra = estereo_ ? 2 : 1;
+        if (static_cast<int>(bruto_.size()) < samples * por_amostra) {
+            bruto_.resize(samples * por_amostra);
         }
         size_t bytes_lidos = 0;
-        if (i2s_channel_read(rx_handle_, bruto_.data(), samples * sizeof(int32_t), &bytes_lidos, 200) != ESP_OK) {
+        if (i2s_channel_read(rx_handle_, bruto_.data(), samples * por_amostra * sizeof(int32_t),
+                             &bytes_lidos, 200) != ESP_OK) {
             return 0;
         }
-        const int lidas = static_cast<int>(bytes_lidos / sizeof(int32_t));
+        const int lidas = static_cast<int>(bytes_lidos / (sizeof(int32_t) * por_amostra));
+        if (lidas <= 0) {
+            return 0;
+        }
+
+        // Energia de cada canal neste pedacinho (só para escolher o canal).
+        if (estereo_) {
+            int64_t e_esq = 0, e_dir = 0;
+            for (int i = 0; i < lidas; ++i) {
+                const int64_t l = bruto_[2 * i] >> 16, r = bruto_[2 * i + 1] >> 16;
+                e_esq += l < 0 ? -l : l;
+                e_dir += r < 0 ? -r : r;
+            }
+            media_esq_ += (static_cast<float>(e_esq) / lidas - media_esq_) * 0.02f;
+            media_dir_ += (static_cast<float>(e_dir) / lidas - media_dir_) * 0.02f;
+            // Troca de canal só com folga clara (3x), para não ficar pulando.
+            if (!usa_direito_ && media_dir_ > 3.0f * media_esq_ + 0.5f) {
+                usa_direito_ = true;
+            } else if (usa_direito_ && media_esq_ > 3.0f * media_dir_ + 0.5f) {
+                usa_direito_ = false;
+            }
+            assistente::InformarCanais(media_esq_, media_dir_, usa_direito_);
+        }
+
         const int desloc = assistente::DeslocamentoMic();
+        const int deslocamento_canal = estereo_ ? (usa_direito_ ? 1 : 0) : 0;
         int cortes = 0;
         for (int i = 0; i < lidas; ++i) {
-            int32_t v = bruto_[i] >> desloc;
+            int32_t v = bruto_[por_amostra * i + deslocamento_canal] >> desloc;
             if (v > INT16_MAX) {
                 v = INT16_MAX;
                 ++cortes;
@@ -69,6 +122,10 @@ protected:
 
 private:
     std::vector<int32_t> bruto_;  // usado só pela tarefa de áudio
+    bool estereo_ = false;
+    bool usa_direito_ = false;
+    float media_esq_ = 0.0f;
+    float media_dir_ = 0.0f;
 };
 
 // -----------------------------------------------------------------------------

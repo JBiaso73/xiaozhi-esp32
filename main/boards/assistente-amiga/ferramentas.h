@@ -41,6 +41,9 @@ void MedirSom(const int16_t* amostras, int quantidade, int cortes);
 // Maior = menos ganho. Ajustado à distância pelo MIC_AJUSTE_DB do Apps Script.
 int DeslocamentoMic();
 
+// O codec informa a energia média de cada canal do microfone e qual está em uso.
+void InformarCanais(float energia_esquerda, float energia_direita, bool usando_direito);
+
 }  // namespace assistente
 
 #endif
