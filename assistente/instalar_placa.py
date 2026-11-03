@@ -170,6 +170,8 @@ def gerar(r: Path, sem_segredos: bool) -> None:
             print("  Wi-Fi dela, Apps Script e atualização remota: tudo preenchido.")
         casa = "preenchido" if valores["WIFI_1_SSID"] and valores["WIFI_1_SENHA"] else "vazio"
         print(f"  Wi-Fi de teste (WIFI_1, sua casa): {casa}")
+        if valores["WIFI_1_SSID"] and valores["WIFI_1_SSID"] == valores["WIFI_2_SSID"]:
+            print("  Atenção: WIFI_1 e WIFI_2 são a MESMA rede. Falta a rede dela ou a sua.")
 
 
 def main() -> None:
