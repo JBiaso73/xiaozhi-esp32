@@ -27,6 +27,7 @@ Uso (na pasta raiz do repositório xiaozhi-esp32):
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -123,9 +124,50 @@ def c_str(valor: str) -> str:
     return '"' + "".join(saida) + '"'
 
 
+def _normalizar(nome: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", nome.upper())
+
+
+def _cadastros():
+    """Secrets e Variables do GitHub (o workflow passa tudo em JSON, só para conferir nomes)."""
+    fontes = []
+    for variavel, origem in (("TODOS_SEGREDOS", "Secrets"), ("TODAS_VARIAVEIS", "Variables")):
+        try:
+            dados = json.loads(os.environ.get(variavel) or "{}")
+        except ValueError:
+            dados = {}
+        if isinstance(dados, dict):
+            dados = {k: v for k, v in dados.items() if k.lower() != "github_token"}
+            fontes.append((origem, dados))
+    return fontes
+
+
+def _apelidos(nome: str):
+    """WIFI_2_SENHA também aceita WIFI2_PASSWORD, wifi_2_senha etc."""
+    sinonimos = {"SENHA": ("SENHA", "PASSWORD", "PASS", "PWD", "PASSWD"),
+                 "SSID": ("SSID", "NOME", "REDE")}
+    base, _, fim = nome.rpartition("_")
+    return {_normalizar(base + s) for s in sinonimos.get(fim, (fim,))}
+
+
 def gerar(r: Path, sem_segredos: bool) -> None:
+    cadastros = _cadastros()
+    for origem, dados in cadastros:
+        if os.environ.get("TODOS_SEGREDOS") is not None:
+            nomes = ", ".join(sorted(dados)) or "(nenhum)"
+            print(f"  Nomes em {origem} no GitHub: {nomes}")
+
     def env(nome: str, padrao: str = "") -> str:
-        return os.environ.get(nome, padrao).strip()
+        valor = os.environ.get(nome, padrao).strip()
+        if valor or sem_segredos or nome in ("ASSISTENTE_VERSAO", "LEMBRETE_FALADO", "OTA_MANIFESTO_URL"):
+            return valor
+        procurados = _apelidos(nome)
+        for origem, dados in cadastros:
+            for chave, conteudo in dados.items():
+                if _normalizar(chave) in procurados and str(conteudo).strip():
+                    print(f"  {nome}: usando \"{chave}\" de {origem}")
+                    return str(conteudo).strip()
+        return valor
 
     versao = env("ASSISTENTE_VERSAO")
     if not versao:
