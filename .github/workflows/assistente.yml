@@ -58,16 +58,14 @@ jobs:
         env:
           ASSISTENTE_VERSAO: ${{ github.run_number }}
           LEMBRETE_FALADO: ${{ inputs.lembrete_falado && '1' || '0' }}
-          WIFI_1_SSID: ${{ secrets.WIFI_1_SSID }}
-          WIFI_1_SENHA: ${{ secrets.WIFI_1_SENHA }}
-          WIFI_2_SSID: ${{ secrets.WIFI_2_SSID }}
-          WIFI_2_SENHA: ${{ secrets.WIFI_2_SENHA }}
+          # Aceita também nomes parecidos e a aba "Variables", caso tenham sido cadastrados assim.
+          WIFI_1_SSID: ${{ secrets.WIFI_1_SSID || secrets.WIFI1_SSID || vars.WIFI_1_SSID || vars.WIFI1_SSID }}
+          WIFI_1_SENHA: ${{ secrets.WIFI_1_SENHA || secrets.WIFI1_SENHA || secrets.WIFI_1_PASSWORD || secrets.WIFI1_PASSWORD || vars.WIFI_1_SENHA || vars.WIFI1_SENHA }}
+          WIFI_2_SSID: ${{ secrets.WIFI_2_SSID || secrets.WIFI2_SSID || secrets.WIFI_SSID_2 || vars.WIFI_2_SSID || vars.WIFI2_SSID }}
+          WIFI_2_SENHA: ${{ secrets.WIFI_2_SENHA || secrets.WIFI2_SENHA || secrets.WIFI_SENHA_2 || secrets.WIFI_2_PASSWORD || secrets.WIFI2_PASSWORD || vars.WIFI_2_SENHA || vars.WIFI2_SENHA }}
           APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
           APPS_SCRIPT_TOKEN: ${{ secrets.APPS_SCRIPT_TOKEN }}
           OTA_MANIFESTO_URL: https://raw.githubusercontent.com/${{ github.repository }}/ota/manifest.json
-          # Só para conferir nomes digitados diferente (o log mostra os NOMES, nunca os valores).
-          TODOS_SEGREDOS: ${{ toJSON(secrets) }}
-          TODAS_VARIAVEIS: ${{ toJSON(vars) }}
         run: |
           python assistente/instalar_placa.py --registrar
           if [[ "${{ inputs.modo }}" == "atualizacao" ]]; then
