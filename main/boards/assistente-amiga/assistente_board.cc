@@ -129,6 +129,59 @@ private:
 };
 
 // -----------------------------------------------------------------------------
+// Tela redonda: o layout padrão do XiaoZhi é pensado para tela quadrada e, no
+// círculo de 240 px, corta a hora e o status em cima e o texto embaixo.
+// Aqui o layout é montado normalmente e depois ajustado para caber no círculo.
+// Medidas em % da largura, para continuar certo se a tela mudar de tamanho.
+// -----------------------------------------------------------------------------
+class TelaRedonda : public SpiLcdDisplay {
+public:
+    using SpiLcdDisplay::SpiLcdDisplay;
+
+    void SetupUI() override {
+        SpiLcdDisplay::SetupUI();
+        DisplayLockGuard lock(this);
+        const int w = width_;
+        const int h = height_;
+
+        // Hora e status: mais para baixo e mais estreitos (cabem na curva de cima).
+        if (status_bar_ != nullptr) {
+            lv_obj_set_width(status_bar_, w * 56 / 100);
+            lv_obj_align(status_bar_, LV_ALIGN_TOP_MID, 0, h * 8 / 100);
+        }
+        if (status_label_ != nullptr) {
+            lv_obj_set_width(status_label_, w * 56 / 100);
+            lv_obj_align(status_label_, LV_ALIGN_CENTER, 0, 0);
+        }
+        if (notification_label_ != nullptr) {
+            lv_obj_set_width(notification_label_, w * 56 / 100);
+            lv_obj_align(notification_label_, LV_ALIGN_CENTER, 0, 0);
+        }
+        // Ícones (Wi-Fi): logo abaixo da hora, sem a faixa de fundo.
+        if (top_bar_ != nullptr) {
+            lv_obj_set_width(top_bar_, w * 46 / 100);
+            lv_obj_set_style_bg_opa(top_bar_, LV_OPA_TRANSP, 0);
+            lv_obj_align(top_bar_, LV_ALIGN_TOP_MID, 0, h * 18 / 100);
+        }
+        // Texto de baixo (falas e dicas): mais para cima e mais estreito.
+        if (bottom_bar_ != nullptr) {
+            lv_obj_set_width(bottom_bar_, w * 68 / 100);
+            lv_obj_set_style_bg_opa(bottom_bar_, LV_OPA_TRANSP, 0);
+            lv_obj_align(bottom_bar_, LV_ALIGN_BOTTOM_MID, 0, -(h * 9 / 100));
+        }
+        if (chat_message_label_ != nullptr) {
+            lv_obj_set_width(chat_message_label_, w * 64 / 100);
+            lv_obj_align(chat_message_label_, LV_ALIGN_CENTER, 0, 0);
+        }
+        // Rosto no centro do círculo.
+        if (emoji_box_ != nullptr) {
+            lv_obj_align(emoji_box_, LV_ALIGN_CENTER, 0, h * 1 / 100);
+        }
+        ESP_LOGI(TAG, "Layout ajustado para tela redonda %dx%d", w, h);
+    }
+};
+
+// -----------------------------------------------------------------------------
 // Sensor de toque universal. Em vez de supor como o módulo funciona, a placa
 // observa o pino a cada 20 ms e aprende sozinha:
 //  - nível de repouso = como o pino fica sem ninguém tocar (alto ou baixo);
@@ -270,7 +323,7 @@ private:
         esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);
         esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
 
-        display_ = new SpiLcdDisplay(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
+        display_ = new TelaRedonda(panel_io, panel, DISPLAY_WIDTH, DISPLAY_HEIGHT,
                                      DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
                                      DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
     }

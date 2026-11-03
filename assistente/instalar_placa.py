@@ -40,7 +40,7 @@ BLOCO_CMAKE = f"""elseif(CONFIG_{SIMBOLO})
     set(BOARD_DIR "{PLACA}")
     set(BUILTIN_TEXT_FONT font_noto_sans_basic_16_4)
     set(BUILTIN_ICON_FONT font_material_symbols_16_4)
-    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+    set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_128)
 """
 
 BLOCO_KCONFIG = f"""    config {SIMBOLO}
